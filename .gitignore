@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Ambientes virtuais
+.venv
+venv/
+ENV/
+
+# Modelos / Caches locais
+.cache/
+*.onnx
+
+# Arquivos pesados de teste e scans
+*.psd
+test_*.png
+test_*.jpg
+
+# Mantém apenas as imagens de demonstração
+!sample_comparacao.png
+!sample_manhwa_input.png
+
+# IDEs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+desktop.ini
