@@ -17,12 +17,54 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
         pass
 
 import glob
+import json
 import time
+import traceback
 import cv2
 from cleaner_core import ManhwaCleaner
 
+PROGRESS_FILENAME = "progress.json"
 
-def processar_capitulo(cleaner: ManhwaCleaner, pasta_capitulo: str):
+
+def _caminho_progresso(pasta_saida: str) -> str:
+    return os.path.join(pasta_saida, PROGRESS_FILENAME)
+
+
+def _carregar_progresso(path: str) -> dict:
+    if not os.path.isfile(path):
+        return {"pages": {}}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict) and isinstance(data.get("pages"), dict):
+            return data
+    except Exception as exc:
+        print(f"  [!] Progresso ilegível ({path}): {exc}. Começando um arquivo novo.")
+    return {"pages": {}}
+
+
+def _salvar_progresso(path: str, data: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _tentar_salvar_progresso(path: str, data: dict) -> None:
+    try:
+        _salvar_progresso(path, data)
+    except Exception as exc:
+        print(f"  [!] Não foi possível gravar o progresso ({path}): {exc}")
+
+
+def _psd_concluido(path: str) -> bool:
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def processar_capitulo(cleaner: ManhwaCleaner, pasta_capitulo: str) -> list[tuple[str, str]]:
     pasta_saida = os.path.join(pasta_capitulo, "psd_limpos")
     os.makedirs(pasta_saida, exist_ok=True)
     
@@ -37,37 +79,89 @@ def processar_capitulo(cleaner: ManhwaCleaner, pasta_capitulo: str):
     
     if not arquivos:
         print(f"[!] Nenhuma imagem encontrada em {pasta_capitulo}")
-        return
+        return []
         
     nome_cap = os.path.basename(os.path.normpath(pasta_capitulo))
     print(f"\n=======================================================")
     print(f"[*] Iniciando: {nome_cap} ({len(arquivos)} páginas)")
     print(f"[*] Destino: {pasta_saida}")
     print(f"=======================================================")
+
+    progresso_path = _caminho_progresso(pasta_saida)
+    progresso = _carregar_progresso(progresso_path)
+    progresso["chapter"] = os.path.abspath(pasta_capitulo)
+    progresso["output_dir"] = os.path.abspath(pasta_saida)
+    paginas = progresso.setdefault("pages", {})
     
     sucessos = 0
+    falhas: list[tuple[str, str]] = []
     t_cap_inicio = time.time()
     
     for i, arq in enumerate(arquivos, 1):
-        nome_base = os.path.splitext(os.path.basename(arq))[0] + ".psd"
+        nome_arquivo = os.path.basename(arq)
+        nome_base = os.path.splitext(nome_arquivo)[0] + ".psd"
         destino_psd = os.path.join(pasta_saida, nome_base)
+        parcial = destino_psd + ".partial"
+
+        if _psd_concluido(destino_psd):
+            print(f"  [{i:02d}/{len(arquivos):02d}] {nome_arquivo} já concluída ({nome_base}), pulando.")
+            paginas[nome_arquivo] = {
+                "status": "ok",
+                "source": arq,
+                "output": destino_psd,
+                "skipped": True,
+            }
+            _tentar_salvar_progresso(progresso_path, progresso)
+            sucessos += 1
+            continue
         
         t0 = time.time()
-        img = cv2.imread(arq)
-        if img is None:
-            print(f"  [!] Falha ao abrir {arq}")
+        try:
+            img = cv2.imread(arq)
+            if img is None:
+                raise RuntimeError(f"não foi possível abrir a imagem: {arq}")
+
+            h, w = img.shape[:2]
+            cleaned, _ = cleaner.clean_webtoon_strip(img, chunk_h=1600, overlap=300)
+            cleaner.export_to_psd(img, cleaned, parcial)
+            os.replace(parcial, destino_psd)
+        except Exception as exc:
+            tb = traceback.format_exc()
+            print(f"  [!] Erro ao processar {arq}")
+            print(tb)
+            if os.path.isfile(parcial):
+                try:
+                    os.remove(parcial)
+                except OSError as rm_exc:
+                    print(f"  [!] Não foi possível remover {parcial}: {rm_exc}")
+            falhas.append((arq, str(exc)))
+            paginas[nome_arquivo] = {
+                "status": "error",
+                "source": arq,
+                "error": str(exc),
+                "traceback": tb,
+            }
+            _tentar_salvar_progresso(progresso_path, progresso)
             continue
-            
-        h, w = img.shape[:2]
-        cleaned, _ = cleaner.clean_webtoon_strip(img, chunk_h=1600, overlap=300)
-        cleaner.export_to_psd(img, cleaned, destino_psd)
         
         duracao = time.time() - t0
-        print(f"  [{i:02d}/{len(arquivos):02d}] {os.path.basename(arq)} ({w}x{h}px) -> {nome_base} ({duracao:.2f}s)")
+        print(f"  [{i:02d}/{len(arquivos):02d}] {nome_arquivo} ({w}x{h}px) -> {nome_base} ({duracao:.2f}s)")
         sucessos += 1
+        paginas[nome_arquivo] = {
+            "status": "ok",
+            "source": arq,
+            "output": destino_psd,
+            "skipped": False,
+            "seconds": round(duracao, 2),
+        }
+        _tentar_salvar_progresso(progresso_path, progresso)
         
     t_total = time.time() - t_cap_inicio
-    print(f"\n[DONE] Capítulo {nome_cap} concluído: {sucessos}/{len(arquivos)} páginas em {t_total:.1f}s!")
+    print(
+        f"\n[DONE] Capítulo {nome_cap} concluído: {sucessos}/{len(arquivos)} páginas "
+        f"em {t_total:.1f}s. Falhas: {len(falhas)}."
+    )
+    return falhas
 
 
 def main():
@@ -92,13 +186,28 @@ def main():
     cleaner = ManhwaCleaner(inpaint_radius=3, stroke_dilate=2)
     
     t_global = time.time()
+    todas_falhas: list[tuple[str, str]] = []
     for cap in capitulos:
         if os.path.isdir(cap):
-            processar_capitulo(cleaner, cap)
+            try:
+                falhas = processar_capitulo(cleaner, cap)
+            except Exception as exc:
+                tb = traceback.format_exc()
+                print(f"[!] Erro ao processar o capítulo {cap}")
+                print(tb)
+                todas_falhas.append((cap, str(exc)))
+                continue
+            todas_falhas.extend(falhas)
         else:
             print(f"[!] Diretório não encontrado: {cap}")
             
     print(f"\n[★] Processamento concluído em {time.time() - t_global:.1f}s!")
+    if todas_falhas:
+        print(f"\n[!] Resumo de páginas com falha ({len(todas_falhas)}):")
+        for caminho, erro in todas_falhas:
+            print(f"    - {caminho}: {erro}")
+    else:
+        print("\n[OK] Resumo: nenhuma página falhou.")
 
 
 if __name__ == "__main__":

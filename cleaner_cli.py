@@ -96,10 +96,18 @@ def main():
         "--radius", type=int, default=3,
         help="Raio do inpainting (padrão: 3). Ideal para degradês suaves."
     )
+    parser.add_argument(
+        "--pad", type=int, default=8,
+        help="Pixels extras ao redor da caixa de texto antes de segmentar o balão (padrão: 8)."
+    )
     
     args = parser.parse_args()
     
-    cleaner = ManhwaCleaner(inpaint_radius=args.radius, stroke_dilate=args.dilate)
+    cleaner = ManhwaCleaner(
+        inpaint_radius=args.radius,
+        stroke_dilate=args.dilate,
+        box_pad=args.pad,
+    )
     
     input_path = os.path.abspath(args.input)
     
